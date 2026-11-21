@@ -31,7 +31,8 @@ def test_index_page_served():
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "高温炉温度采样选点" in r.text
+    assert "高温炉温度实验工具" in r.text
+    assert "突变归因" in r.text
 
 
 def test_select_ok():
@@ -104,3 +105,88 @@ def test_error_response_has_no_partial_result():
     r = client.post("/api/select", json=payload)
     body = r.json()
     assert "candidates" not in body and "selected_times" not in body
+
+
+# ---------------- 突变归因 API ----------------
+
+ATTR_PAYLOAD = {
+    "reference_times": [0, 1, 2, 3, 5, 8, 13],
+    "reference_values": [25.3, 196.1, 330.8, 433.5, 578.2, 695.1, 769.9],
+    "test_times": [0, 1, 2, 3, 5, 8, 13],
+    "test_values": [22.1, 201.5, 336.0, 428.7, 972.4, 1091.0, 1168.3],
+    "suspicious_times": [3, 5, 8, 10],
+    "length_scale": 2.0,
+    "noise_std": 5.0,
+    "signal_variance": 100000.0,
+    "step_prior_std": 400.0,
+}
+
+
+def test_attribute_ok():
+    r = client.post("/api/attribute", json=ATTR_PAYLOAD)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    probs = data["posterior_probabilities"]
+    assert set(probs) == {"no_step", "common_step", "test_probe_step"}
+    assert abs(sum(probs.values()) - 1.0) < 1e-9
+    assert data["threshold"] == 0.9
+    # 示例数据在 t=5 之后待检探头抬升，参考探头未抬升
+    assert data["decision"] == "test_probe_step"
+    assert data["conclusive"] is True
+    assert data["best_step_time"] == 5.0
+    assert data["n_valid_step_times"] == 4
+    assert len(data["candidates"]) == 4
+    for c in data["candidates"]:
+        assert c["valid"]
+        assert c["reference_before"] >= 1 and c["reference_after"] >= 1
+        assert c["test_before"] >= 1 and c["test_after"] >= 1
+        assert 0.0 <= c["time_weight_test_probe"] <= 1.0
+
+
+def test_attribute_invalid_times_rejected():
+    payload = dict(ATTR_PAYLOAD, suspicious_times=list(range(21)))
+    r = client.post("/api/attribute", json=payload)
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "INVALID_INPUT"
+    payload = dict(ATTR_PAYLOAD, suspicious_times=[5.0, 5.0])
+    r = client.post("/api/attribute", json=payload)
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_attribute_zero_noise_rejected():
+    r = client.post("/api/attribute", json=dict(ATTR_PAYLOAD, noise_std=0))
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_attribute_mismatched_lengths_rejected():
+    r = client.post("/api/attribute", json=dict(ATTR_PAYLOAD, test_values=[1.0]))
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_attribute_no_valid_step_time_returns_diagnostics():
+    payload = dict(ATTR_PAYLOAD, suspicious_times=[0, 20])
+    r = client.post("/api/attribute", json=payload)
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "NO_VALID_STEP_TIME"
+    assert len(detail["candidates"]) == 2
+    assert all(not c["valid"] and c["reason"] for c in detail["candidates"])
+    assert "posterior_probabilities" not in detail
+
+
+def test_attribute_unknown_field_rejected():
+    r = client.post("/api/attribute", json=dict(ATTR_PAYLOAD, bogus=1))
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_attribute_non_psd_rejected():
+    payload = dict(ATTR_PAYLOAD, reference_times=[5.0, 5.0],
+                   reference_values=[1.0, 1.0], test_times=[5.0, 5.0],
+                   test_values=[1.0, 1.0], suspicious_times=[5.0], noise_std=1e-9)
+    r = client.post("/api/attribute", json=payload)
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "KERNEL_NOT_PSD"

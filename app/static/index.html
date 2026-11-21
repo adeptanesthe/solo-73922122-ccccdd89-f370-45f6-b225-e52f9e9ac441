@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>高温炉温度采样选点 · GP 后验不确定性下降</title>
+<title>高温炉温度实验工具 · GP 采样选点与突变归因</title>
 <style>
-  :root { --blue:#1f6feb; --green:#1a7f37; --red:#cf222e; --gray:#57606a; --border:#d0d7de; }
+  :root { --blue:#1f6feb; --green:#1a7f37; --red:#cf222e; --orange:#bc4c00;
+          --gray:#57606a; --border:#d0d7de; }
   * { box-sizing: border-box; }
   body { margin:0; font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
          background:#f6f8fa; color:#1f2328; }
@@ -28,7 +29,11 @@
   button { padding:8px 18px; font-size:14px; border:1px solid var(--border); border-radius:6px;
            background:#fff; cursor:pointer; }
   button.primary { background:var(--blue); border-color:var(--blue); color:#fff; font-weight:600; }
+  button:disabled { opacity:.55; cursor:wait; }
   button:hover { filter:brightness(.95); }
+  .tabs { display:flex; gap:8px; margin-bottom:14px; }
+  .tab { border-radius:8px 8px 0 0; border-bottom-color:transparent; font-weight:600; color:var(--gray); }
+  .tab.active { background:#0a3069; border-color:#0a3069; color:#fff; }
   .hint { font-size:12px; color:var(--gray); margin-top:6px; }
   .error { margin-top:14px; padding:12px 14px; border:1px solid #f3c2c6; background:#ffebe9;
            color:var(--red); border-radius:6px; font-size:13px; white-space:pre-wrap; }
@@ -48,16 +53,35 @@
   .legend span { display:inline-block; margin-right:14px; }
   .sw { display:inline-block; width:14px; height:3px; vertical-align:middle; margin-right:4px; }
   code { background:#eff1f3; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .verdict { padding:12px 14px; border-radius:8px; font-size:14px; font-weight:600;
+             margin-bottom:14px; border:1px solid; }
+  .verdict.ok { background:#dafbe1; border-color:#4ac26b; color:#0f5323; }
+  .verdict.warn { background:#fff8c5; border-color:#d4a72c; color:#7d4e00; }
+  .verdict.info { background:#ddf4ff; border-color:#54aeff; color:#0a3069; }
+  .prob { margin:10px 0 14px; }
+  .prob-row { display:grid; grid-template-columns:150px 1fr 64px; gap:10px;
+              align-items:center; margin:7px 0; font-size:13px; }
+  .bar-track { position:relative; height:16px; background:#eff1f3; border-radius:8px; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:8px; transition:width .25s ease; }
+  .bar-fill.c0 { background:#8c959f; }
+  .bar-fill.c1 { background:#bc4c00; }
+  .bar-fill.c2 { background:#cf222e; }
+  .bar-track .threshold { position:absolute; top:-3px; bottom:-3px; left:90%; width:2px;
+                          background:#1f2328; }
+  .prob-val { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .prob-head { display:flex; justify-content:space-between; font-size:12px; color:var(--gray); }
+  .best { margin:6px 0 0; font-size:13px; }
+  .muted { color:var(--gray); font-size:12px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>高温炉温度采样选点</h1>
-  <p>高斯过程（平方指数核）后验协方差 · 枚举全部合法候选点对 · 选择总方差下降最大的 2 个新增采样点</p>
+  <h1>高温炉温度实验工具</h1>
+  <p>高斯过程（平方指数核）· 采样选点 / 温度突变归因</p>
 </header>
 <main>
   <section class="card">
-    <h2>1. 输入数据</h2>
+    <h2>1. 已测数据（同时作为突变归因的参考探头记录）</h2>
     <div class="grid">
       <div>
         <label for="measured-times">已测时刻（逗号 / 空格 / 换行分隔）</label>
@@ -68,15 +92,9 @@
         <textarea id="measured-values" rows="5" placeholder="25.3, 196.1, 330.8, ..."></textarea>
       </div>
       <div>
-        <label for="candidate-times">候选采样时刻</label>
-        <textarea id="candidate-times" rows="5" placeholder="0.5, 1.5, 2.5, ..."></textarea>
-      </div>
-      <div>
         <label>CSV 导入（可选，导入后覆盖上方文本框）</label>
         <input type="file" id="measured-file" accept=".csv,.txt">
         <div class="hint">已测数据 CSV：每行 <code>时刻,温度</code></div>
-        <input type="file" id="candidate-file" accept=".csv,.txt">
-        <div class="hint">候选时刻 CSV：每行一个时刻</div>
       </div>
     </div>
 
@@ -84,16 +102,36 @@
     <div class="grid">
       <div><label for="length-scale">核长度尺度 ℓ（&gt; 0）</label>
         <input type="number" id="length-scale" step="any" value="2"></div>
-      <div><label for="noise-std">观测噪声 σₙ（≥ 0，标准差）</label>
+      <div><label for="noise-std">观测噪声 σₙ（标准差）</label>
         <input type="number" id="noise-std" step="any" value="5"></div>
       <div><label for="signal-variance">核信号方差（&gt; 0，温度² 量级）</label>
         <input type="number" id="signal-variance" step="any" value="100000"></div>
-      <div><label for="min-interval">最小时间间隔（≥ 0）</label>
+      <div><label for="min-interval">最小时间间隔（≥ 0，仅选点用）</label>
         <input type="number" id="min-interval" step="any" value="1"></div>
-      <div><label>新增采样点数</label>
-        <input type="text" value="2（固定）" disabled></div>
     </div>
+    <div class="hint">选点：噪声可 ≥ 0；突变归因：噪声标准差须 &gt; 0，且两支探头每条读数的噪声相互独立。</div>
+  </section>
 
+  <div class="tabs" role="tablist">
+    <button class="tab active" id="tab-select" role="tab" aria-selected="true"
+            aria-controls="panel-select" data-panel="panel-select" type="button">采样选点</button>
+    <button class="tab" id="tab-attribute" role="tab" aria-selected="false"
+            aria-controls="panel-attribute" data-panel="panel-attribute" type="button">突变归因</button>
+  </div>
+
+  <section class="card" id="panel-select" role="tabpanel" aria-labelledby="tab-select">
+    <h2>3. 候选采样时刻与选点</h2>
+    <div class="grid">
+      <div>
+        <label for="candidate-times">候选采样时刻（至少 2 个）</label>
+        <textarea id="candidate-times" rows="4" placeholder="0.5, 1.5, 2.5, ..."></textarea>
+      </div>
+      <div>
+        <label>候选时刻 CSV 导入（可选）</label>
+        <input type="file" id="candidate-file" accept=".csv,.txt">
+        <div class="hint">每行一个时刻</div>
+      </div>
+    </div>
     <div class="actions">
       <button id="fill-demo" type="button">载入示例数据</button>
       <button id="run" class="primary" type="button">计算选点</button>
@@ -101,8 +139,8 @@
     <div id="error" class="error" hidden></div>
   </section>
 
-  <section class="card" id="result-card" hidden>
-    <h2>3. 选点结果</h2>
+  <section class="card" id="panel-select-result" hidden>
+    <h2>4. 选点结果</h2>
     <div class="summary" id="summary"></div>
 
     <h3>后验均值 ± 2σ（选点前）与选中采样点</h3>
@@ -130,6 +168,65 @@
       <tbody id="cand-tbody"></tbody>
     </table>
   </section>
+
+  <section class="card" id="panel-attribute" role="tabpanel" aria-labelledby="tab-attribute" hidden>
+    <h2>3. 待检探头读数与可疑时刻</h2>
+    <div class="grid">
+      <div>
+        <label for="test-times">待检探头时刻</label>
+        <textarea id="test-times" rows="5" placeholder="0, 1, 2, 3, 5, 8, 13"></textarea>
+      </div>
+      <div>
+        <label for="test-values">待检探头温度（与时刻一一对应）</label>
+        <textarea id="test-values" rows="5" placeholder="22.1, 201.5, 336.0, ..."></textarea>
+      </div>
+      <div>
+        <label for="suspicious-times">可疑时刻（1–20 个，互不相同）</label>
+        <textarea id="suspicious-times" rows="5" placeholder="3, 5, 8, 10"></textarea>
+      </div>
+      <div>
+        <label for="step-prior-std">阶跃幅度先验标准差（&gt; 0，温度）</label>
+        <input type="number" id="step-prior-std" step="any" value="400">
+        <div class="hint">阶跃幅度 ~ N(0, 该标准差²)，零均值</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="fill-attribute-demo" type="button">载入归因示例</button>
+      <button id="run-attribute" class="primary" type="button">计算归因</button>
+    </div>
+    <div id="attr-error" class="error" hidden></div>
+    <div class="muted" id="attr-busy" hidden>计算中…（结果只在当前输入下有效）</div>
+    <div class="hint">归因使用上一节的已测数据作为参考探头，并与待检探头共享同一个平方指数核 GP。
+      三类假设（无阶跃 / 共同阶跃 / 仅待检探头阶跃）先验各 1/3，达到 90% 才下结论。</div>
+  </section>
+
+  <section class="card" id="attr-result" hidden>
+    <h2>4. 归因结果</h2>
+    <div id="attr-verdict" class="verdict"></div>
+
+    <h3>三类假设的后验概率（黑线为 90% 判定阈值）</h3>
+    <div class="prob" id="attr-probs"></div>
+
+    <h3>两支探头读数与判定的阶跃时刻</h3>
+    <svg id="attr-chart" viewBox="0 0 720 300" role="img"></svg>
+    <div class="legend">
+      <span><span class="sw" style="background:#1f6feb"></span>参考探头</span>
+      <span><span class="sw" style="background:#bc4c00"></span>待检探头</span>
+      <span><span class="sw" style="background:#8c959f"></span>可疑时刻</span>
+      <span><span class="sw" style="background:#cf222e"></span>判定的阶跃时刻</span>
+    </div>
+
+    <h3>可疑时刻取证明细</h3>
+    <table>
+      <thead><tr>
+        <th>时刻</th><th class="l">是否有效</th>
+        <th>参考·前</th><th>参考·后</th><th>待检·前</th><th>待检·后</th>
+        <th>共同阶跃时刻权重</th><th>仅待检阶跃时刻权重</th>
+      </tr></thead>
+      <tbody id="attr-cand-tbody"></tbody>
+    </table>
+    <div class="hint" id="attr-cand-note"></div>
+  </section>
 </main>
 
 <script>
@@ -143,30 +240,40 @@ const DEMO = {
                     8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 14, 14.5, 15, 15.5],
 };
 
+const ATTR_DEMO = {
+  measured_times:  DEMO.measured_times,
+  measured_values: DEMO.measured_values,
+  test_times:  [0, 1, 2, 3, 5, 8, 13],
+  test_values: [22.1, 201.5, 336.0, 428.7, 972.4, 1091.0, 1168.3],
+  suspicious_times: [3, 5, 8, 10],
+  step_prior_std: 400,
+  length_scale: 2,
+  noise_std: 5,
+  signal_variance: 100000,
+};
+
 function fmt(v) {
   if (!Number.isFinite(v)) return String(v);
   const a = Math.abs(v);
   if (a !== 0 && (a >= 1e5 || a < 1e-3)) return v.toExponential(3);
   return Number(v.toPrecision(5)).toString();
 }
+function pct(v) { return Number.isFinite(v) ? (100 * v).toFixed(1) + "%" : "—"; }
 
 function parseNumList(text, name) {
   const tokens = text.trim().split(/[\s,;，、]+/).filter(Boolean);
-  const vals = tokens.map(t => {
+  return tokens.map(t => {
     const v = Number(t);
     if (!Number.isFinite(v)) throw new Error(`${name} 中含有无法解析的值：“${t}”`);
     return v;
   });
-  return vals;
 }
 
-function showError(msg) {
-  const el = $("error");
+function showError(el, msg) {
   el.textContent = msg;
   el.hidden = false;
-  $("result-card").hidden = true;   // 整批拒绝：清空旧结果，不给部分建议
 }
-function clearError() { $("error").hidden = true; }
+function clearError(el) { el.hidden = true; }
 
 function readFileInto(input, apply) {
   const f = input.files && input.files[0];
@@ -185,15 +292,17 @@ $("measured-file").addEventListener("change", e => {
       if (!parts.length) continue;
       const t = Number(parts[0]), v = Number(parts[1]);
       if (parts.length < 2 || !Number.isFinite(t) || !Number.isFinite(v)) {
-        showError(`已测 CSV 第 ${ln + 1} 行无法解析（应为：时刻,温度）：${lines[ln]}`);
+        showError($("error"), `已测 CSV 第 ${ln + 1} 行无法解析（应为：时刻,温度）：${lines[ln]}`);
+        showError($("attr-error"), `已测 CSV 第 ${ln + 1} 行无法解析（应为：时刻,温度）：${lines[ln]}`);
         return;
       }
       times.push(t); values.push(v);
     }
-    if (!times.length) { showError("已测 CSV 中没有有效数据行"); return; }
+    if (!times.length) { showError($("error"), "已测 CSV 中没有有效数据行"); return; }
     $("measured-times").value = times.join(", ");
     $("measured-values").value = values.join(", ");
-    clearError();
+    clearError($("error"));
+    invalidateAttribution();
   });
 });
 
@@ -201,10 +310,10 @@ $("candidate-file").addEventListener("change", e => {
   readFileInto(e.target, text => {
     try {
       const vals = parseNumList(text.replace(/\r?\n/g, " "), "候选时刻");
-      if (!vals.length) { showError("候选 CSV 中没有有效数值"); return; }
+      if (!vals.length) { showError($("error"), "候选 CSV 中没有有效数值"); return; }
       $("candidate-times").value = vals.join(", ");
-      clearError();
-    } catch (err) { showError(err.message); }
+      clearError($("error"));
+    } catch (err) { showError($("error"), err.message); }
   });
 });
 
@@ -216,8 +325,56 @@ $("fill-demo").addEventListener("click", () => {
   $("noise-std").value = 5;
   $("signal-variance").value = 100000;
   $("min-interval").value = 1;
-  clearError();
+  clearError($("error"));
+  invalidateAttribution();
 });
+
+$("fill-attribute-demo").addEventListener("click", () => {
+  $("measured-times").value = ATTR_DEMO.measured_times.join(", ");
+  $("measured-values").value = ATTR_DEMO.measured_values.join(", ");
+  $("test-times").value = ATTR_DEMO.test_times.join(", ");
+  $("test-values").value = ATTR_DEMO.test_values.join(", ");
+  $("suspicious-times").value = ATTR_DEMO.suspicious_times.join(", ");
+  $("step-prior-std").value = ATTR_DEMO.step_prior_std;
+  $("length-scale").value = ATTR_DEMO.length_scale;
+  $("noise-std").value = ATTR_DEMO.noise_std;
+  $("signal-variance").value = ATTR_DEMO.signal_variance;
+  clearError($("attr-error"));
+  invalidateAttribution();
+});
+
+/* ---------- 选项卡 ---------- */
+
+for (const tab of document.querySelectorAll(".tab")) {
+  tab.addEventListener("click", () => {
+    for (const t of document.querySelectorAll(".tab")) {
+      const on = t === tab;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    const onSelect = tab.dataset.panel === "panel-select";
+    $("panel-select").hidden = !onSelect;
+    $("panel-select-result").hidden = !onSelect || selectResult === null;
+    $("panel-attribute").hidden = onSelect;
+    $("attr-result").hidden = onSelect || attrResult === null;
+  });
+}
+
+/* ---------- 采样选点 ---------- */
+
+function readModelParams() {
+  const num = id => {
+    const v = Number($(id).value);
+    if (!Number.isFinite(v)) throw new Error(`参数 ${$(id).previousElementSibling?.textContent || id} 不是有限数值`);
+    return v;
+  };
+  return {
+    length_scale: num("length-scale"),
+    noise_std: num("noise-std"),
+    signal_variance: num("signal-variance"),
+    min_interval: num("min-interval"),
+  };
+}
 
 function collectPayload() {
   const measured_times = parseNumList($("measured-times").value, "已测时刻");
@@ -226,30 +383,19 @@ function collectPayload() {
   if (measured_times.length !== measured_values.length)
     throw new Error(`已测时刻（${measured_times.length} 个）与已测温度（${measured_values.length} 个）数量不一致`);
   if (candidate_times.length < 2) throw new Error("候选时刻至少需要 2 个");
-  const num = id => {
-    const v = Number($(id).value);
-    if (!Number.isFinite(v)) throw new Error(`参数 ${$(id).previousElementSibling?.textContent || id} 不是有限数值`);
-    return v;
-  };
-  const payload = {
-    measured_times, measured_values, candidate_times,
-    length_scale: num("length-scale"),
-    noise_std: num("noise-std"),
-    signal_variance: num("signal-variance"),
-    min_interval: num("min-interval"),
-  };
-  if (payload.length_scale <= 0) throw new Error("核长度尺度必须 > 0");
-  if (payload.noise_std < 0) throw new Error("观测噪声必须 ≥ 0");
-  if (payload.signal_variance <= 0) throw new Error("核信号方差必须 > 0");
-  if (payload.min_interval < 0) throw new Error("最小时间间隔必须 ≥ 0");
-  return payload;
+  const p = readModelParams();
+  if (p.length_scale <= 0) throw new Error("核长度尺度必须 > 0");
+  if (p.noise_std < 0) throw new Error("观测噪声必须 ≥ 0");
+  if (p.signal_variance <= 0) throw new Error("核信号方差必须 > 0");
+  if (p.min_interval < 0) throw new Error("最小时间间隔必须 ≥ 0");
+  return { measured_times, measured_values, candidate_times, ...p };
 }
 
 $("run").addEventListener("click", async () => {
-  clearError();
+  clearError($("error"));
   let payload;
   try { payload = collectPayload(); }
-  catch (err) { showError(err.message); return; }
+  catch (err) { showError($("error"), err.message); return; }
   $("run").disabled = true;
   try {
     const resp = await fetch("/api/select", {
@@ -263,36 +409,151 @@ $("run").addEventListener("click", async () => {
       if (d && typeof d === "object") {
         let msg = `【${d.code || "ERROR"}】${d.message || "请求被拒绝"}`;
         if (Array.isArray(d.errors)) msg += "\n" + d.errors.map(e => `· ${e.loc.join(".")}: ${e.msg}`).join("\n");
-        showError(msg);
-      } else showError(typeof d === "string" ? d : `请求失败（HTTP ${resp.status}）`);
+        showError($("error"), msg);
+      } else showError($("error"), typeof d === "string" ? d : `请求失败（HTTP ${resp.status}）`);
+      selectResult = null;
+      $("panel-select-result").hidden = true;
+      $("summary").innerHTML = "";
       return;
     }
-    render(payload, data);
+    renderSelect(payload, data);
   } catch (err) {
-    showError(`网络或服务错误：${err.message}`);
+    showError($("error"), `网络或服务错误：${err.message}`);
   } finally {
     $("run").disabled = false;
   }
 });
 
-/* ---------- 结果渲染 ---------- */
+/* ---------- 突变归因（输入变化即撤下旧结果，旧响应不得回填） ---------- */
 
-function render(payload, res) {
-  $("result-card").hidden = false;
-  const pct = res.total_variance_before > 0
+let attrGeneration = 0;
+let attrResult = null;          // 当前有效的归因结果（输入一改即为 null）
+
+function invalidateAttribution() {
+  attrGeneration += 1;          // 使所有在途请求的响应失效
+  attrResult = null;
+  $("attr-result").hidden = true;
+  $("attr-verdict").textContent = "";
+  $("attr-probs").innerHTML = "";
+  $("attr-cand-tbody").innerHTML = "";
+  $("attr-cand-note").textContent = "";
+  clearError($("attr-error"));
+  $("attr-busy").hidden = true;
+  // 旧请求已被放弃，重新允许提交当前输入，避免按钮一直停留在禁用态。
+  $("run-attribute").disabled = false;
+}
+
+for (const id of ["measured-times", "measured-values", "length-scale", "noise-std",
+                  "signal-variance", "test-times", "test-values", "suspicious-times",
+                  "step-prior-std"]) {
+  $(id).addEventListener("input", invalidateAttribution);
+}
+
+function collectAttributePayload() {
+  const reference_times = parseNumList($("measured-times").value, "已测时刻（参考探头）");
+  const reference_values = parseNumList($("measured-values").value, "已测温度（参考探头）");
+  const test_times = parseNumList($("test-times").value, "待检探头时刻");
+  const test_values = parseNumList($("test-values").value, "待检探头温度");
+  const suspicious_times = parseNumList($("suspicious-times").value, "可疑时刻");
+  if (reference_times.length !== reference_values.length)
+    throw new Error(`参考探头时刻（${reference_times.length} 个）与温度（${reference_values.length} 个）数量不一致`);
+  if (test_times.length !== test_values.length)
+    throw new Error(`待检探头时刻（${test_times.length} 个）与温度（${test_values.length} 个）数量不一致`);
+  if (!test_times.length) throw new Error("请填写待检探头读数（至少 1 条）");
+  if (!suspicious_times.length) throw new Error("请填写至少 1 个可疑时刻");
+  if (suspicious_times.length > 20) throw new Error(`可疑时刻至多 20 个（当前 ${suspicious_times.length} 个）`);
+  const seen = new Set();
+  for (const t of suspicious_times) {
+    const key = t.toPrecision(12);
+    if (seen.has(key)) throw new Error(`可疑时刻重复：${t}`);
+    seen.add(key);
+  }
+  const { length_scale, noise_std, signal_variance } = readModelParams();
+  const step_prior_std = Number($("step-prior-std").value);
+  if (!Number.isFinite(step_prior_std)) throw new Error("阶跃幅度先验标准差不是有限数值");
+  if (length_scale <= 0) throw new Error("核长度尺度必须 > 0");
+  if (noise_std <= 0) throw new Error("突变归因要求观测噪声标准差 > 0");
+  if (signal_variance <= 0) throw new Error("核信号方差必须 > 0");
+  if (step_prior_std <= 0) throw new Error("阶跃幅度先验标准差必须 > 0");
+  return {
+    reference_times, reference_values, test_times, test_values, suspicious_times,
+    length_scale, noise_std, signal_variance, step_prior_std,
+  };
+}
+
+$("run-attribute").addEventListener("click", async () => {
+  clearError($("attr-error"));
+  let payload;
+  try { payload = collectAttributePayload(); }
+  catch (err) { invalidateAttribution(); showError($("attr-error"), err.message); return; }
+
+  invalidateAttribution();               // 本次提交也让更早的在途请求失效
+  const generation = attrGeneration;
+  $("run-attribute").disabled = true;
+  $("attr-busy").hidden = false;
+  try {
+    const resp = await fetch("/api/attribute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => null);
+    if (generation !== attrGeneration) return;   // 输入已变：丢弃早先请求的响应
+    if (!resp.ok) {
+      const d = data && data.detail;
+      if (d && typeof d === "object") {
+        let msg = `【${d.code || "ERROR"}】${d.message || "请求被拒绝"}`;
+        if (Array.isArray(d.errors)) msg += "\n" + d.errors.map(e => `· ${e.loc.join(".")}: ${e.msg}`).join("\n");
+        showError($("attr-error"), msg);
+        if (Array.isArray(d.candidates) && d.candidates.length) {
+          renderAttrCandidates(d.candidates, null);
+          $("attr-cand-note").textContent = "所有可疑时刻都未通过取证要求，因而无法比较阶跃假设。";
+          $("attr-result").hidden = false;
+          attrResult = "error";
+          $("attr-verdict").className = "verdict warn";
+          $("attr-verdict").textContent = "无法完成归因：没有有效候选时刻（详见下方取证明细）";
+          $("attr-probs").innerHTML = "";
+        }
+      } else {
+        showError($("attr-error"), typeof d === "string" ? d : `请求失败（HTTP ${resp.status}）`);
+      }
+      return;
+    }
+    renderAttribution(payload, data);
+  } catch (err) {
+    if (generation === attrGeneration) showError($("attr-error"), `网络或服务错误：${err.message}`);
+  } finally {
+    // 只有仍是当前输入对应的请求才恢复按钮/提示；迟到的旧响应不得改动界面状态。
+    if (generation === attrGeneration) {
+      $("run-attribute").disabled = false;
+      $("attr-busy").hidden = true;
+    }
+  }
+});
+
+/* ---------- 选点结果渲染 ---------- */
+
+let selectResult = null;
+
+function renderSelect(payload, res) {
+  selectResult = res;
+  $("panel-select-result").hidden = false;
+  const pctVal = res.total_variance_before > 0
     ? (100 * res.total_reduction / res.total_variance_before).toFixed(1) + "%" : "—";
   $("summary").innerHTML = "";
   const metrics = [
     ["选中的新采样时刻", res.selected_times.map(t => fmt(t)).join(" 与 "), true],
     ["选前总方差", fmt(res.total_variance_before)],
     ["选后总方差", fmt(res.total_variance_after)],
-    ["总方差下降", fmt(res.total_reduction) + `（${pct}）`],
+    ["总方差下降", fmt(res.total_reduction) + `（${pctVal}）`],
     ["合法点对 / 全部点对", `${res.n_pairs_feasible} / ${res.n_pairs_total}`],
   ];
   for (const [k, v, sel] of metrics) {
     const div = document.createElement("div");
     div.className = "metric";
-    div.innerHTML = `<div class="k">${k}</div><div class="v${sel ? " sel" : ""}">${v}</div>`;
+    div.innerHTML = `<div class="k"></div><div class="v${sel ? " sel" : ""}"></div>`;
+    div.firstChild.textContent = k;
+    div.lastChild.textContent = v;
     $("summary").appendChild(div);
   }
 
@@ -332,13 +593,113 @@ function render(payload, res) {
       `<td>${fmt(c.variance_before)}</td><td>${fmt(c.variance_after)}</td><td>${fmt(c.posterior_mean)}</td>`;
     tbody.appendChild(tr);
   }
-  $("result-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("panel-select-result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ---------- 归因结果渲染 ---------- */
+
+const CLASS_LABELS = {
+  no_step: "无阶跃",
+  common_step: "两支探头共同阶跃",
+  test_probe_step: "仅待检探头阶跃",
+};
+const CLASS_ORDER = ["no_step", "common_step", "test_probe_step"];
+
+function renderAttribution(payload, res) {
+  attrResult = "ok";
+  $("attr-result").hidden = false;
+
+  const probs = res.posterior_probabilities;
+  const best = CLASS_ORDER.reduce((a, b) => (probs[b] > probs[a] ? b : a), CLASS_ORDER[0]);
+  const bestProb = probs[best];
+
+  const verdict = $("attr-verdict");
+  if (res.conclusive && res.decision === "no_step") {
+    verdict.className = "verdict ok";
+    verdict.textContent = `结论：无阶跃（最高后验 ${pct(bestProb)} ≥ ${pct(res.threshold)}）`;
+  } else if (res.conclusive && (res.decision === "common_step" || res.decision === "test_probe_step")) {
+    verdict.className = "verdict info";
+    verdict.textContent = `结论：判为「${CLASS_LABELS[res.decision]}」（后验 ${pct(bestProb)} ≥ ${pct(res.threshold)}）` +
+      (res.best_step_time !== null
+        ? `，最可能阶跃时刻 t = ${fmt(res.best_step_time)}（该类内时刻后验 ${pct(res.best_step_time_probability)}）`
+        : "");
+  } else {
+    verdict.className = "verdict warn";
+    verdict.textContent = `待复核：最高后验「${CLASS_LABELS[best]}」仅 ${pct(bestProb)}，未达到 ${pct(res.threshold)} 判定阈值。` +
+      "请补充读数或检查模型参数后再判断查温控还是查探头。";
+  }
+
+  const probsBox = $("attr-probs");
+  probsBox.innerHTML = "";
+  for (const name of CLASS_ORDER) {
+    const p = probs[name];
+    const row = document.createElement("div");
+    row.className = "prob-row";
+    const label = document.createElement("div");
+    label.textContent = CLASS_LABELS[name];
+    const track = document.createElement("div");
+    track.className = "bar-track";
+    const fill = document.createElement("div");
+    fill.className = "bar-fill " + (name === "no_step" ? "c0" : name === "common_step" ? "c1" : "c2");
+    fill.style.width = `${Math.max(0, Math.min(1, p)) * 100}%`;
+    const mark = document.createElement("div");
+    mark.className = "threshold";
+    track.append(fill, mark);
+    const val = document.createElement("div");
+    val.className = "prob-val";
+    val.textContent = pct(p);
+    row.append(label, track, val);
+    probsBox.appendChild(row);
+  }
+
+  drawChart($("attr-chart"), [
+    { type: "vlines", x: payload.suspicious_times, color: "#8c959f", dash: "3 5" },
+    { type: "points", x: payload.reference_times, y: payload.reference_values, color: "#1f6feb", r: 4 },
+    { type: "line", x: sortedXY(payload.reference_times, payload.reference_values).x,
+      y: sortedXY(payload.reference_times, payload.reference_values).y, color: "#1f6feb", width: 1.5 },
+    { type: "points", x: payload.test_times, y: payload.test_values, color: "#bc4c00", r: 4 },
+    { type: "line", x: sortedXY(payload.test_times, payload.test_values).x,
+      y: sortedXY(payload.test_times, payload.test_values).y, color: "#bc4c00", width: 1.5 },
+    ...(res.best_step_time !== null
+      ? [{ type: "vlines", x: [res.best_step_time], color: "#cf222e", dash: "none" }] : []),
+  ], { xLabel: "时刻", yLabel: "温度" });
+
+  renderAttrCandidates(res.candidates, res.best_step_time);
+  $("attr-cand-note").textContent =
+    `有效可疑时刻 ${res.n_valid_step_times} 个；` +
+    `无阶跃假设的对数边际似然 ${fmt(res.log_likelihood_no_step)}。` +
+    (res.decision === "needs_review" ? "未达阈值，不给阶跃时刻结论。" : "");
+  $("attr-result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function sortedXY(xs, ys) {
+  const pairs = xs.map((x, i) => [x, ys[i]]).sort((a, b) => a[0] - b[0]);
+  return { x: pairs.map(p => p[0]), y: pairs.map(p => p[1]) };
+}
+
+function renderAttrCandidates(candidates, bestTime) {
+  const tbody = $("attr-cand-tbody");
+  tbody.innerHTML = "";
+  for (const c of candidates) {
+    const tr = document.createElement("tr");
+    if (!c.valid) tr.className = "excluded";
+    else if (bestTime !== null && c.time === bestTime) tr.className = "selected";
+    const status = c.valid ? "有效" : `无效：${c.reason}`;
+    const wc = c.time_weight_common === undefined || c.time_weight_common === null ? "—" : pct(c.time_weight_common);
+    const wt = c.time_weight_test_probe === undefined || c.time_weight_test_probe === null ? "—" : pct(c.time_weight_test_probe);
+    tr.innerHTML = `<td>${fmt(c.time)}</td><td class="l">${status}</td>` +
+      `<td>${c.reference_before}</td><td>${c.reference_after}</td>` +
+      `<td>${c.test_before}</td><td>${c.test_after}</td>` +
+      `<td>${wc}</td><td>${wt}</td>`;
+    tbody.appendChild(tr);
+  }
 }
 
 /* ---------- 简易 SVG 图表 ---------- */
 
 function drawChart(svg, series, { xLabel, yLabel }) {
-  const W = 720, H = 280, P = { l: 64, r: 16, t: 14, b: 36 };
+  const W = 720, H = svg.id === "attr-chart" ? 300 : 280;
+  const P = { l: 64, r: 16, t: 14, b: 36 };
   const iw = W - P.l - P.r, ih = H - P.t - P.b;
   let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
   const eat = (x, y) => {
@@ -354,6 +715,7 @@ function drawChart(svg, series, { xLabel, yLabel }) {
   if (!Number.isFinite(xMin)) { xMin = 0; xMax = 1; yMin = 0; yMax = 1; }
   if (xMax === xMin) { xMax += 1; xMin -= 1; }
   if (yMax === yMin) { yMax += 1; yMin -= 1; }
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const yPad = 0.06 * (yMax - yMin); yMin -= yPad; yMax += yPad;
   const X = v => P.l + (v - xMin) / (xMax - xMin) * iw;
   const Y = v => P.t + ih - (v - yMin) / (yMax - yMin) * ih;
@@ -367,7 +729,6 @@ function drawChart(svg, series, { xLabel, yLabel }) {
   };
   svg.innerHTML = "";
 
-  // 坐标轴与刻度
   for (let k = 0; k <= 5; k++) {
     const xv = xMin + (xMax - xMin) * k / 5, yv = yMin + (yMax - yMin) * k / 5;
     svg.appendChild(el("line", { x1: X(xv), y1: P.t, x2: X(xv), y2: P.t + ih, stroke: "#eaeef2" }));
@@ -396,7 +757,8 @@ function drawChart(svg, series, { xLabel, yLabel }) {
     } else if (s.type === "vlines") {
       s.x.forEach(x => svg.appendChild(el("line", {
         x1: X(x), y1: P.t, x2: X(x), y2: P.t + ih,
-        stroke: s.color, "stroke-width": 1.5, "stroke-dasharray": s.dash || "none",
+        stroke: s.color, "stroke-width": s.dash === "none" ? 2 : 1.2,
+        "stroke-dasharray": s.dash || "none",
       })));
     }
   }
